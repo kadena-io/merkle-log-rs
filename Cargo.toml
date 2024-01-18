@@ -1,0 +1,20 @@
+[package]
+name = "merkle-log"
+version = "0.1.0"
+edition = "2021"
+description = "Binary Merkle Trees"
+homepage = "https://github.com/kadena-io/merkle-log-rs"
+repository = "https://github.com/kadena-io/merkle-log-rs"
+license = "BSD-3-Clause"
+
+[dependencies]
+digest = "^0.10.7"
+
+[dev-dependencies]
+sha2 = "^0.10.8"
+rand = { version = "^0.8.5", features = ["small_rng"] }
+criterion = { version = "0.4", features = ["html_reports"] }
+
+[[bench]]
+name = "benchmark"
+harness = false
