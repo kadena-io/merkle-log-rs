@@ -20,7 +20,7 @@ use crate::errors::AsHex;
 
 /// The type of Merkle hash values
 ///
-pub struct MerkleHash<H>(Output<H>)
+pub struct MerkleHash<H>(pub Output<H>)
 where
     H: Digest;
     // Backed by GenericArray, which has static layout
