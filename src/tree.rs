@@ -1,4 +1,3 @@
-use std::cell::UnsafeCell;
 use digest::{
     Digest,
     FixedOutputReset,
@@ -178,6 +177,19 @@ pub(crate) fn merkle_node_<H: FixedOutputReset + Digest>(
     digest::Digest::finalize_into_reset(ctx, &mut result.0);
 }
 
+pub(crate) fn merkle_node_2<H: FixedOutputReset + Digest>(
+    ctx: &mut H,
+    left: &MerkleHash<H>,
+    right: &MerkleHash<H>,
+) -> MerkleHash<H> {
+    digest::Digest::update(ctx, NODE_TAG);
+    digest::Digest::update(ctx, left);
+    digest::Digest::update(ctx, right);
+    let digest = digest::Digest::finalize_reset(ctx);
+    MerkleHash(digest)
+
+}
+
 /* ************************************************************************** */
 /* MerkleTree */
 
@@ -247,7 +259,24 @@ impl<H: Digest + FixedOutputReset> MerkleTree<H> {
         Self::log_len_from_len(self.len())
     }
 
+
 }
+
+// Extend a `Vec`, using a mutable closure. The closure will have a read-only
+// view of the existing values in the `Vec`.
+// If the closure returns `Some`, that value will be appended to the `Vec`
+// and building will continue.
+// If the closure returns `None`, building will conclude.
+fn build<F,T>(mut f: F, v: &mut Vec<T>)
+  where F: FnMut(&[T]) -> Option<T> {
+    loop {
+        match f(v) {
+            Some(new_elem) => v.push(new_elem),
+            None => { break; },
+        }
+    }
+
+  }
 
 /* ************************************************************************** */
 /* Public API */
@@ -295,22 +324,15 @@ impl<H: Digest + FixedOutputReset> MerkleTree<H> {
     /// of logarithmic length.
     ///
     pub fn new(leafs: &[MerkleLogEntry<H>]) -> MerkleTree<H> {
-        // The MerkleTree of the empty log is the hash of the empty string
         if leafs.is_empty() {
             return MerkleTree {
                 tree: vec![MerkleHash(H::digest(""))],
-            };
+            }
         }
         let isize: usize = leafs.len();
         let mut ctx = H::new();
 
-        // wrap hashes in UnsafeCell in order to be able to read from existing hashes while
-        // creating new hashes.
-        // We could also use some append-only vector, but all existing crates seem to target
-        // multithreaded scenarioes, which adds overhead that we don't need here.
-        let mut result: Vec<UnsafeCell<MerkleHash<H>>> = Vec::with_capacity(2 * isize - 1);
-
-        // Stack of the level and the index of a node in the tree
+        let mut result: Vec<MerkleHash<H>> = Vec::with_capacity(2*isize -1);
         let mut stack: Vec<(usize, usize)> = Vec::new();
 
         for l in leafs {
@@ -318,67 +340,50 @@ impl<H: Digest + FixedOutputReset> MerkleTree<H> {
             let cur = result.len();
             unsafe {
                 result.set_len(cur + 1);
-                merkle_leaf_(&mut ctx, result[cur].get_mut(), l);
+                merkle_leaf_(&mut ctx, &mut result[cur], l);
             }
-            stack.push((0, cur));
+            stack.push((0,cur));
 
-            // process stack
-            while let [.., (a, ia), (b, ib)] = stack[..] {
-                if a == b {
-                    let cur = result.len();
-                    unsafe {
-                        result.set_len(cur + 1); // this is unsafe
-                        merkle_node_(
-                            &mut ctx,
-                            &mut *result[cur].get(),
-                            &*result[ia].get(),
-                            &*result[ib].get(),
-                        );
+            // Process stack.
+            build(|old_list| {
+                if let [.., (a, ia), (b, ib)] = stack[..] {
+                    if a == b {
+                      let cur = old_list.len();
+                      let hash_a = &old_list[ia];
+                      let hash_b = &old_list[ib];
+                      stack.pop();
+                      stack.pop();
+                      stack.push((a+1, cur));
+                      Some(merkle_node_2(&mut ctx, hash_a, hash_b))
+                    } else {
+                        None
                     }
-                    stack.pop();
-                    stack.pop();
-                    stack.push((a + 1, cur));
                 } else {
-                    break;
+                    None
                 }
-            }
+            }, &mut result);
+
         }
 
-        // process stack after all leafs are processed
-        loop {
+        // Process stack after all leafs are processed
+        build(|old_list| {
             match stack[..] {
                 [.., (a, ia), (_, ib)] => {
-                    let cur = result.len();
-                    unsafe {
-                        result.set_len(cur + 1); // this is unsafe
-                        merkle_node_(
-                            &mut ctx,
-                            &mut *result[cur].get(),
-                            &*result[ia].get(),
-                            &*result[ib].get(),
-                        );
-                    }
+                    let cur = old_list.len();
+                    let hash_a = &old_list[ia];
+                    let hash_b = &old_list[ib];
                     stack.pop();
                     stack.pop();
-                    stack.push((a + 1, cur));
-                }
-                [_] => break,
+                    stack.push((a+1, cur));
+                    Some(merkle_node_2(&mut ctx, hash_a, hash_b))
+                },
+                [_] => None,
                 [] => unreachable!("code invariant violation"),
-            }
-        }
 
-        // Cast result vector to merkle tree (dropping UnsafeCell)
-        // TODO: use into_raw_parts when it becomes available in future versions of rust
-        unsafe {
-            // make sure the original vector isn't dropped
-            let mut x = std::mem::ManuallyDrop::new(result);
-            let hashes = Vec::<MerkleHash<H>>::from_raw_parts(
-                x.as_mut_ptr().cast::<MerkleHash<H>>(),
-                x.len(),
-                x.capacity(),
-            );
-            MerkleTree::<H> { tree: hashes }
-        }
+            }
+        }, &mut result);
+
+        MerkleTree::<H> { tree: result }
     }
 
     // TODO: online extensible trees.
@@ -391,6 +396,7 @@ impl<H: Digest + FixedOutputReset> MerkleTree<H> {
     //    store the (logarithmic number) of the roots of maximal
     //    full subtrees, i.e. the roots of of all permanent
     //    subtrees.
+
 
 }
 
